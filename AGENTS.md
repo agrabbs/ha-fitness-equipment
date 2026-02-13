@@ -92,7 +92,7 @@ Use the provided installation script:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ha-fitness-equipment.git
+git clone https://github.com/agrabbs/ha-fitness-equipment.git
 cd ha-fitness-equipment
 
 # Run the installation script
