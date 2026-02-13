@@ -1,0 +1,25 @@
+# Quality scale for Fitness Equipment integration
+# Target: Silver tier (80% coverage, full documentation)
+# Eventually: Gold tier (100% coverage, full translations)
+
+quality_scale:
+  # Bronze tier requirements (minimum for core)
+  has_config_flow: true
+  has_tests: false  # TODO: Phase 5
+  has_documentation: true
+  
+  # Silver tier requirements
+  code_coverage: 0  # TODO: Phase 5 - target 80%+
+  code_owners: []  # TODO: Add when ready for core PR
+  
+  # Additional requirements
+  has_diagnostics: false  # TODO: Phase 6
+  has_translations: false  # TODO: Phase 4
+  has_entity_descriptions: true
+  has_device_class: true
+  has_state_class: true
+  
+  # Notes:
+  # - Currently at Bronze level (custom component)
+  # - Phase 4-5: Will reach Silver tier
+  # - Phase 6: Target Gold tier for core submission
