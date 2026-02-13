@@ -92,13 +92,53 @@ async def async_setup_entry(
         )
     )
     
+    # Heart Rate - FTMS (embedded in workout data)
     entities.append(
         FitnessEquipmentSensor(
             coordinator,
             entry,
-            "Heart Rate",
-            "heart_rate",
+            "Heart Rate (FTMS)",
+            "heart_rate_ftms",
             "bpm",
+            None,
+            "mdi:heart-pulse",
+        )
+    )
+    
+    # Heart Rate - HRS (dedicated Heart Rate Service - more accurate)
+    entities.append(
+        FitnessEquipmentSensor(
+            coordinator,
+            entry,
+            "Heart Rate (HRS)",
+            "heart_rate_hrs",
+            "bpm",
+            None,
+            "mdi:heart",
+        )
+    )
+    
+    # Energy Expended from HRS
+    entities.append(
+        FitnessEquipmentSensor(
+            coordinator,
+            entry,
+            "Energy Expended (HRS)",
+            "energy_expended_hrs",
+            UnitOfEnergy.KILO_JOULE,
+            SensorDeviceClass.ENERGY,
+            "mdi:lightning-bolt-circle",
+        )
+    )
+    
+    # RR-Intervals (HRV data)
+    entities.append(
+        FitnessEquipmentSensor(
+            coordinator,
+            entry,
+            "RR Intervals",
+            "rr_intervals",
+            "ms",
             None,
             "mdi:heart-pulse",
         )
@@ -295,10 +335,12 @@ class FitnessEquipmentSensor(CoordinatorEntity[FitnessEquipmentCoordinator], Sen
         # Set suggested display precision based on sensor type
         if data_key in ("speed", "average_speed", "cadence", "average_cadence", "stroke_rate", "average_stroke_rate"):
             self._attr_suggested_display_precision = 1
-        elif data_key in ("power", "average_power", "heart_rate", "calories"):
+        elif data_key in ("power", "average_power", "heart_rate_ftms", "heart_rate_hrs", "calories", "energy_expended_hrs"):
             self._attr_suggested_display_precision = 0
         elif data_key == "distance":
             self._attr_suggested_display_precision = 0
+        elif data_key == "rr_intervals":
+            self._attr_suggested_display_precision = 1  # milliseconds with 1 decimal
 
         # Device info - use coordinator's manufacturer and model if available
         device_type = coordinator.data.get("device_type") if coordinator.data else None
@@ -310,7 +352,7 @@ class FitnessEquipmentSensor(CoordinatorEntity[FitnessEquipmentCoordinator], Sen
         )
 
     @property
-    def native_value(self) -> float | int | None:
+    def native_value(self) -> float | int | str | None:
         """Return the state of the sensor.
         
         Returns:
@@ -320,6 +362,13 @@ class FitnessEquipmentSensor(CoordinatorEntity[FitnessEquipmentCoordinator], Sen
             return None
         
         value = self.coordinator.data.get(self._data_key)
+        
+        # Special handling for RR intervals (HRV data) - could be a list
+        if self._data_key == "rr_intervals" and isinstance(value, list):
+            # Return the most recent RR interval if available
+            if value:
+                return value[-1]
+            return None
         
         # Validate numeric values
         if value is not None and not isinstance(value, (int, float)):

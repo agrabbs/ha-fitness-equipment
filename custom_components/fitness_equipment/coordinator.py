@@ -15,22 +15,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import (
-    DEVICE_INFO_SERVICE_UUID,
-    DOMAIN,
-    FTMS_INDOOR_BIKE_DATA_UUID,
-    FTMS_ROWER_DATA_UUID,
-    FTMS_SERVICE_UUID,
-    FTMS_TREADMILL_DATA_UUID,
-    MANUFACTURER_NAME_UUID,
-    MODEL_NUMBER_UUID,
-)
-from .ftms_parser import (
-    FTMSParser,
-    IndoorBikeData,
-    RowerData,
-    TreadmillData,
-)
+from .ble_services import DeviceInfoService, FTMSService, HeartRateService
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +27,11 @@ CONNECTION_TIMEOUT: Final = 30  # seconds
 
 
 class FitnessEquipmentCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator for Fitness Equipment device."""
+    """Coordinator for Fitness Equipment device.
+    
+    Orchestrates multiple BLE services (FTMS, Heart Rate, Device Info)
+    and merges data from all available services.
+    """
 
     def __init__(
         self,
@@ -59,19 +49,28 @@ class FitnessEquipmentCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.entry = entry
         self.ble_device = ble_device
         self._client: BleakClient | None = None
-        self._device_type: str | None = None
         self._expected_disconnected = False
-        self._parser = FTMSParser()
+        
+        # BLE service handlers
+        self._ftms_service: FTMSService | None = None
+        self._hr_service: HeartRateService | None = None
+        self._device_info_service: DeviceInfoService | None = None
+        
+        # Device metadata (from Device Info Service)
         self.manufacturer: str | None = None
         self.model: str | None = None
+        self.serial_number: str | None = None
+        self.hardware_revision: str | None = None
+        self.firmware_revision: str | None = None
+        self.software_revision: str | None = None
 
     async def _async_setup(self) -> None:
         """Set up the coordinator."""
-        # Connect and determine device type
+        # Connect and discover available services
         await self._ensure_connected()
 
     async def _ensure_connected(self) -> None:
-        """Ensure we have a connection to the device.
+        """Ensure we have a connection to the device and services initialized.
         
         Raises:
             UpdateFailed: If connection fails after retries
@@ -129,250 +128,96 @@ class FitnessEquipmentCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error(error_msg)
             raise UpdateFailed(error_msg)
 
-        # Read device information (manufacturer, model, etc.)
-        await self._read_device_info()
-
-        # Determine device type by checking available characteristics
+        # Discover and initialize available BLE services
         try:
-            await self._detect_device_type()
+            await self._discover_services()
         except Exception as err:
-            _LOGGER.error("Failed to detect device type: %s", err)
-            raise UpdateFailed(f"Failed to detect device type: {err}") from err
+            _LOGGER.error("Failed to discover services: %s", err)
+            raise UpdateFailed(f"Failed to discover services: {err}") from err
 
         _LOGGER.info(
-            "Connected to %s (%s) - Type: %s, Manufacturer: %s",
+            "Connected to %s (%s) - FTMS: %s, HR: %s, Manufacturer: %s",
             self.ble_device.name or "Unknown",
             self.ble_device.address,
-            self._device_type or "Unknown",
+            "Yes" if self._ftms_service else "No",
+            "Yes" if self._hr_service else "No",
             self.manufacturer or "Unknown",
         )
     
-    async def _read_device_info(self) -> None:
-        """Read device information from Device Information Service.
+    async def _discover_services(self) -> None:
+        """Discover and initialize available BLE services.
         
-        Reads manufacturer name and model number if available.
+        Initializes service handlers for:
+        - Device Information Service (DIS) - one-time read
+        - FTMS Service - required, subscribes to notifications
+        - Heart Rate Service (HRS) - optional, subscribes if available
+        
+        Raises:
+            ValueError: If FTMS service is not available (required)
         """
         if not self._client:
-            return
-            
-        try:
-            services = self._client.services
-            if not services:
-                _LOGGER.debug("No services available to read device info")
-                return
-                
-            # Try to get Device Information Service
-            device_info_service = services.get_service(DEVICE_INFO_SERVICE_UUID)
-            if not device_info_service:
-                _LOGGER.debug("Device Information Service not available")
-                return
-            
-            # Read manufacturer name
-            try:
-                manufacturer_char = device_info_service.get_characteristic(
-                    MANUFACTURER_NAME_UUID
-                )
-                if manufacturer_char:
-                    data = await self._client.read_gatt_char(manufacturer_char)
-                    self.manufacturer = data.decode("utf-8").strip()
-                    _LOGGER.debug("Manufacturer: %s", self.manufacturer)
-            except (BleakError, UnicodeDecodeError, AttributeError) as err:
-                _LOGGER.debug("Could not read manufacturer name: %s", err)
-            
-            # Read model number
-            try:
-                model_char = device_info_service.get_characteristic(MODEL_NUMBER_UUID)
-                if model_char:
-                    data = await self._client.read_gatt_char(model_char)
-                    self.model = data.decode("utf-8").strip()
-                    _LOGGER.debug("Model: %s", self.model)
-            except (BleakError, UnicodeDecodeError, AttributeError) as err:
-                _LOGGER.debug("Could not read model number: %s", err)
-                
-        except Exception as err:
-            _LOGGER.debug("Error reading device info: %s", err)
+            raise ValueError("Client not connected")
+        
+        # Initialize Device Information Service (one-time read)
+        self._device_info_service = DeviceInfoService(self._client, _LOGGER)
+        if await self._device_info_service.is_available():
+            device_info = await self._device_info_service.read_static_data()
+            self.manufacturer = device_info.get("manufacturer")
+            self.model = device_info.get("model")
+            self.serial_number = device_info.get("serial_number")
+            self.hardware_revision = device_info.get("hardware_revision")
+            self.firmware_revision = device_info.get("firmware_revision")
+            self.software_revision = device_info.get("software_revision")
+            _LOGGER.debug(
+                "Device info: %s %s (Serial: %s, FW: %s)",
+                self.manufacturer or "Unknown",
+                self.model or "Unknown",
+                self.serial_number or "N/A",
+                self.firmware_revision or "N/A",
+            )
+        else:
+            _LOGGER.debug("Device Information Service not available")
+        
+        # Initialize FTMS Service (required)
+        self._ftms_service = FTMSService(self._client, _LOGGER)
+        if not await self._ftms_service.is_available():
+            raise ValueError("FTMS service not found - this is not a fitness equipment device")
+        
+        await self._ftms_service.subscribe()
+        _LOGGER.info(
+            "FTMS service initialized - Device type: %s",
+            self._ftms_service.device_type or "Unknown",
+        )
+        
+        # Initialize Heart Rate Service (optional)
+        self._hr_service = HeartRateService(self._client, _LOGGER)
+        if await self._hr_service.is_available():
+            await self._hr_service.subscribe()
+            _LOGGER.info("Heart Rate Service initialized and subscribed")
+        else:
+            _LOGGER.debug("Heart Rate Service not available")
     
-    async def _detect_device_type(self) -> None:
-        """Detect the fitness equipment type from GATT characteristics.
+    def _merge_service_data(self) -> dict[str, Any]:
+        """Merge data from all available services.
         
-        Raises:
-            ValueError: If no supported device type is detected
-        """
-        if not self._client:
-            raise ValueError("Client not connected")
-            
-        services = self._client.services
-        if not services:
-            raise ValueError("No services available")
-            
-        ftms_service = services.get_service(FTMS_SERVICE_UUID)
-        if not ftms_service:
-            raise ValueError(f"FTMS service {FTMS_SERVICE_UUID} not found")
-        
-        characteristics = ftms_service.characteristics
-        for char in characteristics:
-            if char.uuid == FTMS_TREADMILL_DATA_UUID:
-                self._device_type = "treadmill"
-                await self._subscribe_to_characteristic(FTMS_TREADMILL_DATA_UUID)
-                return
-            elif char.uuid == FTMS_INDOOR_BIKE_DATA_UUID:
-                self._device_type = "bike"
-                await self._subscribe_to_characteristic(FTMS_INDOOR_BIKE_DATA_UUID)
-                return
-            elif char.uuid == FTMS_ROWER_DATA_UUID:
-                self._device_type = "rower"
-                await self._subscribe_to_characteristic(FTMS_ROWER_DATA_UUID)
-                return
-        
-        raise ValueError("No supported fitness equipment characteristics found")
-
-    async def _subscribe_to_characteristic(self, uuid: str) -> None:
-        """Subscribe to a characteristic for notifications.
-        
-        Args:
-            uuid: The characteristic UUID to subscribe to
-            
-        Raises:
-            BleakError: If subscription fails
-        """
-        if not self._client:
-            raise ValueError("Client not connected")
-
-        try:
-            await self._client.start_notify(uuid, self._notification_handler)
-            _LOGGER.debug(
-                "Subscribed to characteristic %s for %s",
-                uuid,
-                self._device_type or "Unknown",
-            )
-        except (BleakError, AttributeError) as err:
-            _LOGGER.error(
-                "Failed to subscribe to characteristic %s: %s",
-                uuid,
-                err,
-            )
-            raise
-
-    def _notification_handler(self, sender: int, data: bytearray) -> None:
-        """Handle BLE notifications from fitness equipment.
-        
-        Args:
-            sender: The characteristic handle that sent the notification
-            data: The raw notification data
-        """
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Received notification from handle %s (%d bytes): %s",
-                sender,
-                len(data),
-                data.hex(),
-            )
-        
-        if not data:
-            _LOGGER.warning("Received empty notification from handle %s", sender)
-            return
-        
-        try:
-            # Parse the data based on device type
-            parsed_data: dict[str, Any] = {}
-            
-            if self._device_type == "treadmill":
-                treadmill_data = self._parser.parse_treadmill_data(bytes(data))
-                parsed_data = self._treadmill_to_dict(treadmill_data)
-            elif self._device_type == "bike":
-                bike_data = self._parser.parse_indoor_bike_data(bytes(data))
-                parsed_data = self._bike_to_dict(bike_data)
-            elif self._device_type == "rower":
-                rower_data = self._parser.parse_rower_data(bytes(data))
-                parsed_data = self._rower_to_dict(rower_data)
-            else:
-                _LOGGER.warning("Unknown device type: %s", self._device_type)
-                return
-            
-            # Update coordinator data
-            self.async_set_updated_data(parsed_data)
-            
-        except Exception as err:
-            _LOGGER.exception(
-                "Failed to parse notification data from %s: %s",
-                self._device_type or "Unknown",
-                err,
-            )
-
-    def _treadmill_to_dict(self, data: TreadmillData) -> dict[str, Any]:
-        """Convert treadmill data to dictionary.
-        
-        Args:
-            data: Parsed treadmill data from FTMS
-            
         Returns:
-            Dictionary with sensor values
+            Merged dictionary from all service handlers
         """
-        return {
-            "device_type": "treadmill",
-            "speed": data.instant_speed,
-            "average_speed": data.average_speed,
-            "distance": data.total_distance,
-            "inclination": data.inclination,
-            "elevation_gain": data.elevation_gain,
-            "pace": data.instant_pace,
-            "calories": data.total_energy,
-            "heart_rate": data.heart_rate,
-            "power": data.power_output,
-            "elapsed_time": data.elapsed_time,
-            "remaining_time": data.remaining_time,
-        }
-
-    def _bike_to_dict(self, data: IndoorBikeData) -> dict[str, Any]:
-        """Convert bike data to dictionary.
+        merged_data: dict[str, Any] = {}
         
-        Args:
-            data: Parsed bike data from FTMS
-            
-        Returns:
-            Dictionary with sensor values
-        """
-        return {
-            "device_type": "bike",
-            "speed": data.instant_speed,
-            "average_speed": data.average_speed,
-            "cadence": data.instant_cadence,
-            "average_cadence": data.average_cadence,
-            "distance": data.total_distance,
-            "resistance": data.resistance_level,
-            "power": data.instant_power,
-            "average_power": data.average_power,
-            "calories": data.total_energy,
-            "heart_rate": data.heart_rate,
-            "elapsed_time": data.elapsed_time,
-            "remaining_time": data.remaining_time,
-        }
-
-    def _rower_to_dict(self, data: RowerData) -> dict[str, Any]:
-        """Convert rower data to dictionary.
+        # Add FTMS data (base fitness data)
+        if self._ftms_service:
+            ftms_data = self._ftms_service.get_data()
+            merged_data.update(ftms_data)
         
-        Args:
-            data: Parsed rower data from FTMS
-            
-        Returns:
-            Dictionary with sensor values
-        """
-        return {
-            "device_type": "rower",
-            "stroke_rate": data.stroke_rate,
-            "stroke_count": data.stroke_count,
-            "average_stroke_rate": data.average_stroke_rate,
-            "distance": data.total_distance,
-            "pace": data.instant_pace,
-            "average_pace": data.average_pace,
-            "power": data.instant_power,
-            "average_power": data.average_power,
-            "resistance": data.resistance_level,
-            "calories": data.total_energy,
-            "heart_rate": data.heart_rate,
-            "elapsed_time": data.elapsed_time,
-            "remaining_time": data.remaining_time,
-        }
+        # Add Heart Rate Service data (if available)
+        if self._hr_service:
+            hr_data = self._hr_service.get_data()
+            merged_data.update(hr_data)
+        
+        return merged_data
+
+
 
     def _on_disconnect(self, client: BleakClient) -> None:
         """Handle disconnection from BLE device.
@@ -422,10 +267,13 @@ class FitnessEquipmentCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Update data via polling (fallback if notifications don't work).
+        """Update data by merging from all service handlers.
+        
+        Services receive BLE notifications and cache data internally.
+        This method merges data from all services and returns it.
         
         Returns:
-            Current sensor data dictionary
+            Merged sensor data dictionary from all services
             
         Raises:
             UpdateFailed: If connection fails
@@ -440,13 +288,27 @@ class FitnessEquipmentCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Wrap unexpected errors
             raise UpdateFailed(f"Connection error: {err}") from err
         
-        # Return current data (notifications should keep it updated)
-        return self.data or {}
+        # Merge and return data from all services
+        return self._merge_service_data()
 
     async def async_shutdown(self) -> None:
         """Shutdown the coordinator and disconnect from device."""
         self._expected_disconnected = True
         
+        # Unsubscribe from all services
+        if self._ftms_service:
+            try:
+                await self._ftms_service.unsubscribe()
+            except Exception as err:
+                _LOGGER.debug("Error unsubscribing from FTMS service: %s", err)
+        
+        if self._hr_service:
+            try:
+                await self._hr_service.unsubscribe()
+            except Exception as err:
+                _LOGGER.debug("Error unsubscribing from HR service: %s", err)
+        
+        # Disconnect from device
         if self._client and self._client.is_connected:
             _LOGGER.debug(
                 "Disconnecting from %s (%s)",

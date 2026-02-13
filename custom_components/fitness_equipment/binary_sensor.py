@@ -29,8 +29,13 @@ async def async_setup_entry(
     """Set up Fitness Equipment binary sensor platform."""
     coordinator = entry.runtime_data
 
-    # Create a workout active sensor based on speed/power
-    async_add_entities([FitnessEquipmentWorkoutSensor(coordinator, entry)])
+    # Create binary sensors
+    entities = [
+        FitnessEquipmentWorkoutSensor(coordinator, entry),
+        HeartRateSensorContactSensor(coordinator, entry),
+    ]
+    
+    async_add_entities(entities)
 
 
 class FitnessEquipmentWorkoutSensor(
@@ -90,6 +95,84 @@ class FitnessEquipmentWorkoutSensor(
             True if coordinator has valid data
         """
         return self.coordinator.last_update_success and self.coordinator.data is not None
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        try:
+            self.async_write_ha_state()
+        except Exception as err:
+            _LOGGER.error(
+                "Error updating binary sensor %s: %s",
+                self._attr_name,
+                err,
+                exc_info=True,
+            )
+
+
+class HeartRateSensorContactSensor(
+    CoordinatorEntity[FitnessEquipmentCoordinator], BinarySensorEntity
+):
+    """Binary sensor for heart rate sensor contact detection.
+    
+    Indicates whether the heart rate monitor has good contact with the user.
+    Only available if device supports Heart Rate Service (HRS).
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Heart Rate Sensor Contact"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_icon = "mdi:heart-pulse"
+
+    def __init__(
+        self,
+        coordinator: FitnessEquipmentCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the binary sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_hr_sensor_contact"
+
+        # Device info - use coordinator's manufacturer and model if available
+        device_type = coordinator.data.get("device_type") if coordinator.data else None
+        self._attr_device_info = get_device_info(
+            entry,
+            device_type,
+            coordinator.manufacturer,
+            coordinator.model,
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if sensor contact is detected.
+        
+        Returns:
+            True if contact detected, False if no contact, None if not supported
+        """
+        if not self.coordinator.data:
+            return None
+
+        # Check if sensor contact status is available
+        sensor_contact = self.coordinator.data.get("sensor_contact")
+        
+        # Return None if not supported (will show as "Unknown" in UI)
+        if sensor_contact is None:
+            return None
+        
+        return bool(sensor_contact)
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available.
+        
+        Returns:
+            True if HRS data is available with sensor contact info
+        """
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.data is not None
+            and "sensor_contact" in self.coordinator.data
+        )
 
     @callback
     def _handle_coordinator_update(self) -> None:

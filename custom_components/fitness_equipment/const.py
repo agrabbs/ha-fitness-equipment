@@ -21,9 +21,18 @@ MANUFACTURER_NAME_UUID = "00002a29-0000-1000-8000-00805f9b34fb"
 MODEL_NUMBER_UUID = "00002a24-0000-1000-8000-00805f9b34fb"
 SERIAL_NUMBER_UUID = "00002a25-0000-1000-8000-00805f9b34fb"
 
-# Heart Rate Service (optional)
+# Heart Rate Service (HRS) - optional
 HEART_RATE_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
 HEART_RATE_MEASUREMENT_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
+BODY_SENSOR_LOCATION_UUID = "00002a38-0000-1000-8000-00805f9b34fb"
+HEART_RATE_CONTROL_POINT_UUID = "00002a39-0000-1000-8000-00805f9b34fb"
+
+# Heart Rate Measurement Flags (bitmask)
+HRS_FLAG_HEART_RATE_16BIT = 0x01  # 0 = uint8, 1 = uint16
+HRS_FLAG_SENSOR_CONTACT_SUPPORTED = 0x04  # Sensor contact feature supported
+HRS_FLAG_SENSOR_CONTACT_DETECTED = 0x02  # Sensor contact detected
+HRS_FLAG_ENERGY_EXPENDED = 0x08  # Energy expended present
+HRS_FLAG_RR_INTERVAL = 0x10  # RR-Interval values present
 
 
 class FitnessMachineType(IntEnum):
@@ -102,7 +111,7 @@ ROWER_FLAG_METABOLIC_EQUIVALENT = 0x400
 ROWER_FLAG_ELAPSED_TIME = 0x800
 ROWER_FLAG_REMAINING_TIME = 0x1000
 
-# Sensor types
+# Sensor types (FTMS)
 SENSOR_SPEED = "speed"
 SENSOR_DISTANCE = "distance"
 SENSOR_CALORIES = "calories"
@@ -114,6 +123,17 @@ SENSOR_INCLINATION = "inclination"
 SENSOR_PACE = "pace"
 SENSOR_STROKE_RATE = "stroke_rate"
 SENSOR_ELAPSED_TIME = "elapsed_time"
+
+# Sensor types (HRS - Heart Rate Service)
+SENSOR_HEART_RATE_HRS = "heart_rate_hrs"
+SENSOR_HEART_RATE_FTMS = "heart_rate_ftms"
+SENSOR_ENERGY_EXPENDED_HRS = "energy_expended_hrs"
+SENSOR_RR_INTERVALS = "rr_intervals"
+
+# Binary sensor types
+BINARY_SENSOR_MOVING = "moving"
+BINARY_SENSOR_PAUSED = "paused"
+BINARY_SENSOR_HR_SENSOR_CONTACT = "heart_rate_sensor_contact"
 
 # Configuration
 CONF_DEVICE_TYPE = "device_type"
